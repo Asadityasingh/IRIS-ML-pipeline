@@ -1,0 +1,113 @@
+# .github/workflows/ci-main.yml
+name: CI Pipeline - Main Branch
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  test-evaluate-deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Setup DVC
+        uses: iterative/setup-dvc@v1
+      
+      - name: Pull data and model from DVC
+        env:
+          GDRIVE_CREDENTIALS_DATA: ${{ secrets.GDRIVE_CREDENTIALS_DATA }}
+        run: |
+          dvc remote modify myremote gdrive_use_service_account true
+          dvc pull
+        continue-on-error: true
+      
+      - name: Train model (if not pulled from DVC)
+        run: |
+          if [ ! -f "models/iris_model.pkl" ]; then
+            python src/train.py
+          fi
+      
+      - name: Run all tests
+        run: |
+          pytest tests/ -v --tb=short --junitxml=test-results.xml
+      
+      - name: Generate coverage report
+        run: |
+          pytest tests/ --cov=src --cov-report=term --cov-report=xml --cov-report=html
+      
+      - name: Evaluate model
+        run: |
+          python src/evaluate.py
+      
+      - name: Setup CML
+        uses: iterative/setup-cml@v1
+      
+      - name: Create Production Report
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "# 🎯 Production Model Evaluation Report" > report.md
+          echo "" >> report.md
+          echo "## 📊 Model Performance Metrics" >> report.md
+          echo "" >> report.md
+          
+          if [ -f "metrics/evaluation.json" ]; then
+            echo "| Metric | Value |" >> report.md
+            echo "|--------|-------|" >> report.md
+            cat metrics/evaluation.json | python -c "import sys, json; data = json.load(sys.stdin); [print(f'| {k} | {v:.4f} |') for k, v in data.items()]" >> report.md
+          fi
+          
+          echo "" >> report.md
+          echo "## ✅ Test Summary" >> report.md
+          echo "" >> report.md
+          echo "### Data Validation Tests" >> report.md
+          echo "- ✅ Data shape validation" >> report.md
+          echo "- ✅ Data types verification" >> report.md
+          echo "- ✅ Missing values check" >> report.md
+          echo "- ✅ Feature ranges validation" >> report.md
+          echo "- ✅ Target classes verification" >> report.md
+          echo "- ✅ Class distribution check" >> report.md
+          echo "" >> report.md
+          
+          echo "### Model Evaluation Tests" >> report.md
+          echo "- ✅ Model accuracy threshold" >> report.md
+          echo "- ✅ Prediction shape validation" >> report.md
+          echo "- ✅ Prediction range check" >> report.md
+          echo "- ✅ Probability output validation" >> report.md
+          echo "- ✅ Model determinism test" >> report.md
+          echo "- ✅ Single sample prediction" >> report.md
+          echo "" >> report.md
+          
+          echo "## 🚀 Deployment Status" >> report.md
+          echo "✅ Ready for production deployment" >> report.md
+          echo "" >> report.md
+          
+          echo "---" >> report.md
+          echo "*Pipeline executed on: $(date)*" >> report.md
+          echo "*Branch: main*" >> report.md
+          
+          cml comment create report.md
